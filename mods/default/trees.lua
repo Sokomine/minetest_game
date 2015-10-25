@@ -2,72 +2,63 @@
 -- Grow trees from saplings
 --
 
+-- add craft receipes for turning 1 tree into 4 corresponding wood;
+-- this function will be called for each registered tree
+local default_craft_wood_from_tree = function( tree_name, mod_prefix, nodes )
+	if( not( nodes )
+	  or not( nodes.tree ) or not( nodes.tree.node_name )
+	  or not( nodes.wood ) or not( nodes.wood.node_name )) then
+		return;
+	end
+
+	minetest.register_craft({
+		-- the amount of wood given might be a global config variable
+		output = nodes.wood.node_name..' 4',
+		recipe = {
+			{ nodes.tree.node_name },
+		}
+	});
+end
+
+trees_lib.register_on_new_tree_type( default_craft_wood_from_tree );
+
+
+
 -- 'Can grow' function
 
 local random = math.random
 
 local function can_grow(pos)
-	local node_under = minetest.get_node_or_nil({x = pos.x, y = pos.y - 1, z = pos.z})
-	if not node_under then
-		return false
-	end
-	local name_under = node_under.name
-	local is_soil = minetest.get_item_group(name_under, "soil")
-	if is_soil == 0 then
-		return false
-	end
 	local ll = minetest.get_node_light(pos)
+	-- return -1 - no final abort, just don't grow yet
 	if not ll or ll < 13 then -- Minimum light level for growth
-		return false          -- matches grass, wheat and cotton
+		return -1          -- matches grass, wheat and cotton
 	end
-	return true
+	return 1; -- the tree can grow
 end
 
 
--- Sapling ABM
 
-minetest.register_abm({
-	nodenames = {"default:sapling", "default:junglesapling",
-		"default:pine_sapling", "default:acacia_sapling"},
-	interval = 10,
-	chance = 50,
-	action = function(pos, node)
-		if not can_grow(pos) then
-			return
-		end
-
-		local mapgen = minetest.get_mapgen_params().mgname
-		if node.name == "default:sapling" then
-			minetest.log("action", "A sapling grows into a tree at "..
-				minetest.pos_to_string(pos))
-			if mapgen == "v6" then
-				default.grow_tree(pos, random(1, 4) == 1)
-			else
-				default.grow_new_apple_tree(pos)
-			end
-		elseif node.name == "default:junglesapling" then
-			minetest.log("action", "A jungle sapling grows into a tree at "..
-				minetest.pos_to_string(pos))
-			if mapgen == "v6" then
-				default.grow_jungle_tree(pos)
-			else
-				default.grow_new_jungle_tree(pos)
-			end
-		elseif node.name == "default:pine_sapling" then
-			minetest.log("action", "A pine sapling grows into a tree at "..
-				minetest.pos_to_string(pos))
-			if mapgen == "v6" then
-				default.grow_pine_tree(pos)
-			else
-				default.grow_new_pine_tree(pos)
-			end
-		elseif node.name == "default:acacia_sapling" then
-			minetest.log("action", "An acacia sapling grows into a tree at "..
-				minetest.pos_to_string(pos))
-			default.grow_new_acacia_tree(pos)
-		end
+-- default trees grow using a function if they detect mapgen v6 - and a schematic otherwise
+local default_select_how_to_grow = function( pos, node, how_to_grow, ground_found )
+	local mapgen = minetest.get_mapgen_params().mgname
+	if mapgen == "v6" then
+		-- select growing method 1 (previously set to a function)
+		return 1;
+	else
+		-- select growing method 2 (previously set to a schematic)
+		return 2;
 	end
-})
+end
+
+
+-- log successful growth; for that, we override the a_tree_has_grown function
+local old_a_tree_has_grown = trees_lib.a_tree_has_grown;
+trees_lib.a_tree_has_grown = function( pos, node, how_to_grow )
+	minetest.log("action", "A "..tostring( node.name ).." grows into a tree at "..
+				minetest.pos_to_string(pos))
+	old_a_tree_has_grown( pos, node, how_to_grow );
+end
 
 
 --
@@ -136,66 +127,41 @@ end
 
 -- Apple tree
 
-function default.grow_tree(pos, is_apple_tree, bad)
-	--[[
-		NOTE: Tree-placing code is currently duplicated in the engine
-		and in games that have saplings; both are deprecated but not
-		replaced yet
-	--]]
-	if bad then
-		error("Deprecated use of default.grow_tree")
-	end
+function default.grow_apple_tree( data, a, pos, sapling_data, extra_params )
 
-	local x, y, z = pos.x, pos.y, pos.z
+	-- translate parameter names
+        local c_tree   = sapling_data.cid.tree;
+        local c_leaves = sapling_data.cid.leaves;
+	-- about every 4th tree is an apple tree
+	local is_apple_tree = (random(1, 4) == 1);
 	local height = random(4, 5)
-	local c_tree = minetest.get_content_id("default:tree")
-	local c_leaves = minetest.get_content_id("default:leaves")
 
-	local vm = minetest.get_voxel_manip()
-	local minp, maxp = vm:read_from_map(
-		{x = pos.x - 2, y = pos.y, z = pos.z - 2},
-		{x = pos.x + 2, y = pos.y + height + 1, z = pos.z + 2}
-	)
-	local a = VoxelArea:new({MinEdge = minp, MaxEdge = maxp})
-	local data = vm:get_data()
-
+	-- call the actual tree generation function
 	add_trunk_and_leaves(data, a, pos, c_tree, c_leaves, height, 2, 8, is_apple_tree)
-
-	vm:set_data(data)
-	vm:write_to_map()
-	vm:update_map()
 end
 
 
 -- Jungle tree
 
-function default.grow_jungle_tree(pos, bad)
+function default.grow_jungle_tree(data, a, pos, sapling_data, extra_params )
 	--[[
 		NOTE: Jungletree-placing code is currently duplicated in the engine
 		and in games that have saplings; both are deprecated but not
 		replaced yet
 	--]]
-	if bad then
-		error("Deprecated use of default.grow_jungle_tree")
-	end
 
-	local x, y, z = pos.x, pos.y, pos.z
+	-- translate parameter names
+        local c_jungletree   = sapling_data.cid.tree;
+        local c_jungleleaves = sapling_data.cid.leaves;
+
 	local height = random(8, 12)
-	local c_air = minetest.get_content_id("air")
-	local c_ignore = minetest.get_content_id("ignore")
-	local c_jungletree = minetest.get_content_id("default:jungletree")
-	local c_jungleleaves = minetest.get_content_id("default:jungleleaves")
-
-	local vm = minetest.get_voxel_manip()
-	local minp, maxp = vm:read_from_map(
-		{x = pos.x - 3, y = pos.y - 1, z = pos.z - 3},
-		{x = pos.x + 3, y = pos.y + height + 1, z = pos.z + 3}
-	)
-	local a = VoxelArea:new({MinEdge = minp, MaxEdge = maxp})
-	local data = vm:get_data()
 
 	add_trunk_and_leaves(data, a, pos, c_jungletree, c_jungleleaves, height, 3, 30, false)
 
+	-- further parameters for the roots
+	local x, y, z = pos.x, pos.y, pos.z
+	local c_air = minetest.get_content_id("air")
+	local c_ignore = minetest.get_content_id("ignore")
 	-- Roots
 	for z_dist = -1, 1 do
 		local vi_1 = a:index(x - 1, y - 1, z + z_dist)
@@ -212,10 +178,6 @@ function default.grow_jungle_tree(pos, bad)
 			vi_2 = vi_2 + 1
 		end
 	end
-
-	vm:set_data(data)
-	vm:write_to_map()
-	vm:update_map()
 end
 
 
@@ -235,25 +197,21 @@ local function add_snow(data, vi, c_air, c_ignore, c_snow)
 	end
 end
 
-function default.grow_pine_tree(pos)
+function default.grow_pine_tree(data, a, pos, sapling_data, extra_params )
+
+	-- translate parameter names
+        local c_pine_tree    = sapling_data.cid.tree;
+        local c_pine_needles = sapling_data.cid.leaves;
+
+	-- other internal parameters
 	local x, y, z = pos.x, pos.y, pos.z
 	local maxy = y + random(9, 13) -- Trunk top
 
 	local c_air = minetest.get_content_id("air")
 	local c_ignore = minetest.get_content_id("ignore")
-	local c_pine_tree = minetest.get_content_id("default:pine_tree")
-	local c_pine_needles  = minetest.get_content_id("default:pine_needles")
 	local c_snow = minetest.get_content_id("default:snow")
 	local c_snowblock = minetest.get_content_id("default:snowblock")
 	local c_dirtsnow = minetest.get_content_id("default:dirt_with_snow")
-
-	local vm = minetest.get_voxel_manip()
-	local minp, maxp = vm:read_from_map(
-		{x = x - 3, y = y - 1, z = z - 3},
-		{x = x + 3, y = maxy + 3, z = z + 3}
-	)
-	local a = VoxelArea:new({MinEdge = minp, MaxEdge = maxp})
-	local data = vm:get_data()
 
 	-- Scan for snow nodes near sapling to enable snow on branches
 	local snow = false
@@ -354,44 +312,143 @@ function default.grow_pine_tree(pos)
 			data[vi] = c_pine_tree
 		end
 	end
-
-	vm:set_data(data)
-	vm:write_to_map()
-	vm:update_map()
 end
 
 
--- New apple tree
-
-function default.grow_new_apple_tree(pos)
-	local path = minetest.get_modpath("default") .. "/schematics/apple_tree_from_sapling.mts"
-	minetest.place_schematic({x = pos.x - 2, y = pos.y - 1, z = pos.z - 2},
-		path, 0, nil, false)
-end
 
 
--- New jungle tree
+--
+-- Trees
+--
 
-function default.grow_new_jungle_tree(pos)
-	local path = minetest.get_modpath("default") .. "/schematics/jungle_tree_from_sapling.mts"
-	minetest.place_schematic({x = pos.x - 2, y = pos.y - 1, z = pos.z - 2},
-		path, 0, nil, false)
-end
+-- the normal tree does not have a special name and no space after it
+trees_lib.register_tree( "normal",
+	{ tree = {
+		node_name = "default:tree",
+		tiles = {"default_tree_top.png", "default_tree_top.png", "default_tree.png"},
+		paramtype2 = "facedir",
+	}, wood = {
+		node_name = "default:wood",
+		description = "Wooden Planks",
+		tiles = {"default_wood.png"},
+	}, sapling = {
+		node_name = "default:sapling",
+		description = "Sapling",
+		tiles = {"default_sapling.png"},
+	}, leaves = {
+		node_name = "default:leaves",
+		description = "Leaves",
+		tiles = {"default_leaves.png"},
+		special_tiles = {"default_leaves_simple.png"},
+	}, fruit = {
+		node_name = "default:apple",
+		description = "Apple",
+		tiles = {"default_apple.png"},
+		on_use = minetest.item_eat(2),
+	}},
+	-- growing methods:
+	{
+		   { -- the first growing method uses a function
+			use_function = default.grow_apple_tree,
+			xoff = 2, zoff = 2, yoff = 8, height = 15,
+		}, { -- the second growing method (when mapgen is not v6) uses a schematic
+			use_schematic = minetest.get_modpath("default") .. "/schematics/apple_tree_from_sapling.mts",
+			xoff = 2, zoff = 2, yoff = 1, height = 10,
+		}
+	},
+	-- grows on nodes of this type:
+	{"group:soil"},
+	-- can_grow_function: (in this case, checks if there is enough light)
+	can_grow,
+	-- select_how_to_grow_function:
+	default_select_how_to_grow,
+	-- interval (for the abm)
+	10,
+	-- chance (for the abm)
+	50
+	);
+
+-- the jungletree has no space between tree name and fruther parts of the name
+trees_lib.register_tree( "jungle",
+	{ tree = {
+		node_name = "default:jungletree",
+		description = "Jungle Tree",
+		tiles = {"default_jungletree_top.png", "default_jungletree_top.png",
+			"default_jungletree.png"},
+	}, wood = {
+		node_name = "default:junglewood",
+		description = "Junglewood Planks",
+		tiles = {"default_junglewood.png"},
+	}, sapling = {
+		node_name = "default:junglesapling",
+		description = "Jungle Sapling",
+		tiles = {"default_junglesapling.png"},
+	}, leaves = {
+		node_name = "default:jungleleaves",
+		description = "Jungle Leaves",
+		tiles = {"default_jungleleaves.png"},
+		special_tiles = {"default_jungleleaves_simple.png"},
+	-- the jungletree has no fruit
+	}, fruit = {
+		node_name = "air",
+	}},
+	{	  { -- the first growing method uses a function
+			use_function = default.grow_jungle_tree,
+			xoff = 3, zoff = 3, yoff = 1, height = 15,
+		},{ -- new jungle tree (grown from schematic)
+			use_schematic = minetest.get_modpath("default") .. "/schematics/jungle_tree_from_sapling.mts",
+			xoff = 2, zoff = 2, yoff = 1, height = 10,
+		}
+	},
+	{"group:soil"},
+	can_grow,
+	default_select_how_to_grow,
+	10, 50);
 
 
--- New pine tree
+-- the pine tree mostly follows naming conventions
+trees_lib.register_tree( "pine",
+	-- ...except for the leaves, which are needles
+	{  leaves = {
+		node_name = "default:pine_needles",
+		description = "Pine Needles",
+		tiles = {"default_pine_needles.png"},
+	-- the pine tree also has no fruit
+	}, fruit = {
+		node_name = "air",
+	}},
+	{
+		   { -- the old pine tree (in mapgen v6) grows using a function
+			use_function = default.grow_pine_tree,
+			-- we need to know how much space will have to be loaded into voxelmanip
+			xoff = 3, zoff = 3, yoff = 1, height = 18,
+		}, { -- new pine tree (grown from schematic)
+			use_schematic = minetest.get_modpath("default") .. "/schematics/pine_tree_from_sapling.mts",
+			xoff = 2, zoff = 2, yoff = 1, height = 10,
+		}
+	},
+	{"group:soil"},
+	can_grow,
+	default_select_how_to_grow,
+	10, 50);
 
-function default.grow_new_pine_tree(pos)
-	local path = minetest.get_modpath("default") .. "/schematics/pine_tree_from_sapling.mts"
-	minetest.place_schematic({x = pos.x - 2, y = pos.y - 1, z = pos.z - 2},
-		path, 0, nil, false)
-end
 
+-- the acacia tree follows naming conventions
+trees_lib.register_tree( "acacia",
+	-- the acacia tree has no fruit
+	{ fruit = {
+		node_name = "air",
+	}},
+	-- the acacia only knows to grow from a schematic
+	{
+		   { -- new acacia tree (grown from schematic)
+			use_schematic = minetest.get_modpath("default") .. "/schematics/acacia_tree_from_sapling.mts",
+			xoff = 4, zoff = 4, yoff = 1, height = 10,
+		}
+	},
+	{"group:soil","group:sand"},
+	can_grow,
+	-- the acacia only has the schematic version - there is no other growing method to select
+	nil,
+	10, 50);
 
--- New acacia tree
-
-function default.grow_new_acacia_tree(pos)
-	local path = minetest.get_modpath("default") .. "/schematics/acacia_tree_from_sapling.mts"
-	minetest.place_schematic({x = pos.x - 4, y = pos.y - 1, z = pos.z - 4},
-		path, random, nil, false)
-end
